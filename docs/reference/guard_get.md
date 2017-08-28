@@ -1,18 +1,23 @@
-## guard
+## guard get
 
-Guard by AppsCode - Kubernetes AuthN Daemon
+Get PKI
 
 ### Synopsis
 
 
-Guard by AppsCode - Kubernetes AuthN Daemon
+Get PKI
 
 ### Options
 
 ```
+  -h, --help   help for get
+```
+
+### Options inherited from parent commands
+
+```
       --alsologtostderr                  log to standard error as well as files
       --analytics                        Send analytical events to Google Guard (default true)
-  -h, --help                             help for guard
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
       --log_dir string                   If non-empty, write log files in this directory
       --logtostderr                      log to standard error instead of files
@@ -22,8 +27,8 @@ Guard by AppsCode - Kubernetes AuthN Daemon
 ```
 
 ### SEE ALSO
-* [guard get](guard_get.md)	 - Get PKI
-* [guard init](guard_init.md)	 - Init PKI
-* [guard run](guard_run.md)	 - Run server
-* [guard version](guard_version.md)	 - Prints binary version number.
+* [guard](guard.md)	 - Guard by AppsCode - Kubernetes AuthN Daemon
+* [guard get installer](guard_get_installer.md)	 - Prints Kubernetes objects for deploying guard server
+* [guard get token](guard_get_token.md)	 - Get tokens for Github or Google
+* [guard get webhook-config](guard_get_webhook-config.md)	 - Prints authentication token webhook config file
 

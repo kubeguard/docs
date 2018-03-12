@@ -1,10 +1,9 @@
-package lib
+package token
 
 import (
 	"bufio"
 	"encoding/csv"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -13,26 +12,40 @@ import (
 	auth "k8s.io/api/authentication/v1"
 )
 
-var (
-	tokenMap = map[string]auth.UserInfo{}
+type Authenticator struct {
+	options  Options
+	tokenMap map[string]auth.UserInfo
 	lock     sync.RWMutex
-)
+}
 
-func (s Server) checkTokenAuth(token string) (auth.TokenReview, int) {
-	lock.RLock()
-	defer lock.RUnlock()
+func New(opts Options) *Authenticator {
+	return &Authenticator{
+		options:  opts,
+		tokenMap: map[string]auth.UserInfo{},
+	}
+}
 
-	resp := auth.TokenReview{}
-	user, ok := tokenMap[token]
+func (s *Authenticator) Configure() error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	data, err := LoadTokenFile(s.options.AuthFile)
+	if err != nil {
+		return err
+	}
+	s.tokenMap = data
+	return nil
+}
+
+func (s *Authenticator) Check(token string) (*auth.UserInfo, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
+	user, ok := s.tokenMap[token]
 	if !ok {
-		return Error("Invalid token"), http.StatusUnauthorized
+		return nil, errors.New("Invalid token")
 	}
-
-	resp.Status = auth.TokenReviewStatus{
-		User:          user,
-		Authenticated: true,
-	}
-	return resp, http.StatusOK
+	return &user, nil
 }
 
 //https://kubernetes.io/docs/admin/authentication/#static-token-file
@@ -49,6 +62,7 @@ func LoadTokenFile(file string) (map[string]auth.UserInfo, error) {
 	defer csvFile.Close()
 
 	reader := csv.NewReader(bufio.NewReader(csvFile))
+	reader.FieldsPerRecord = -1
 	data := map[string]auth.UserInfo{}
 	lineNum := 0
 	for {

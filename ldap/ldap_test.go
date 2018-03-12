@@ -1,4 +1,4 @@
-package lib
+package ldap
 
 import (
 	"crypto/tls"
@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"log"
 	"net"
-	"net/http"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"github.com/appscode/kutil/tools/certstore"
 	"github.com/go-ldap/ldap"
 	"github.com/spf13/afero"
+	"github.com/stretchr/testify/assert"
 	"github.com/vjeantet/ldapserver"
 	"k8s.io/client-go/util/cert"
 )
@@ -205,7 +205,7 @@ func handleGroupSearch(w ldapserver.ResponseWriter, m *ldapserver.Message) {
 
 func TestCheckLdapInSecure(t *testing.T) {
 
-	opts := LDAPOptions{
+	opts := Options{
 		ServerAddress:        serverAddr,
 		ServerPort:           inSecurePort,
 		BindDN:               "uid=admin,ou=system",
@@ -221,15 +221,15 @@ func TestCheckLdapInSecure(t *testing.T) {
 		StartTLS:             false,
 		IsSecureLDAP:         false,
 	}
-	s := Server{
-		LDAP: opts,
+	s := Authenticator{
+		opts: opts,
 	}
 
 	runTest(t, false, s, "Insecure LDAP")
 }
 
 func TestCheckLdapSecure(t *testing.T) {
-	opts := LDAPOptions{
+	opts := Options{
 		ServerAddress:        serverAddr,
 		ServerPort:           securePort,
 		BindDN:               "uid=admin,ou=system",
@@ -245,14 +245,14 @@ func TestCheckLdapSecure(t *testing.T) {
 		StartTLS:             false,
 		IsSecureLDAP:         true,
 	}
-	s := Server{
-		LDAP: opts,
+	s := Authenticator{
+		opts: opts,
 	}
 
 	runTest(t, true, s, "Secure LDAP")
 }
 
-func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
+func runTest(t *testing.T, secureConn bool, s Authenticator, serverType string) {
 	srv, err := ldapServerSetup(secureConn, "o=Company,ou=users", "o=Company,ou=groups")
 	if err != nil {
 		t.Fatal(err)
@@ -265,22 +265,22 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 	if secureConn {
 		caCertPool := x509.NewCertPool()
 		caCertPool.AppendCertsFromPEM(srv.certStore.CACert())
-		s.LDAP.CaCertFile = "/test/certs/ca.file"
-		s.LDAP.caCertPool = caCertPool
+		s.opts.CaCertFile = "/test/certs/ca.file"
+		s.opts.CaCertPool = caCertPool
 	}
 
 	dataset := []struct {
-		testName       string
-		token          string
-		expectedStatus int
-		username       string
-		groups         []string
-		userAttribute  string
+		testName      string
+		token         string
+		authenticated bool
+		username      string
+		groups        []string
+		userAttribute string
 	}{
 		{
 			"authentication successful",
 			"nahid:secret",
-			http.StatusOK,
+			true,
 			"nahid",
 			[]string{"group1", "group2"},
 			DefaultUserAttribute,
@@ -288,7 +288,7 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 		{
 			"authentication unsuccessful, reason multiple entry when searching userDN",
 			"nahid:secret",
-			http.StatusUnauthorized,
+			false,
 			"",
 			nil,
 			"id",
@@ -296,7 +296,7 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 		{
 			"authentication unsuccessful, reason empty entry when searching userDN",
 			"nahid1:secret",
-			http.StatusUnauthorized,
+			false,
 			"",
 			nil,
 			DefaultUserAttribute,
@@ -304,7 +304,7 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 		{
 			"authentication unsuccessful, reason invalid token",
 			"invalid_token",
-			http.StatusUnauthorized,
+			false,
 			"",
 			nil,
 			DefaultUserAttribute,
@@ -312,7 +312,7 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 		{
 			"authentication unsuccessful, wrong username or password",
 			"nahid:12345",
-			http.StatusUnauthorized,
+			false,
 			"",
 			nil,
 			DefaultUserAttribute,
@@ -320,7 +320,7 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 		{
 			"authentication successful, empty group",
 			"shuvo:secret",
-			http.StatusOK,
+			true,
 			"shuvo",
 			[]string{},
 			DefaultUserAttribute,
@@ -332,34 +332,27 @@ func runTest(t *testing.T, secureConn bool, s Server, serverType string) {
 			t.Log(test)
 
 			serv := s
-			serv.LDAP.UserAttribute = test.userAttribute
+			serv.opts.UserAttribute = test.userAttribute
 
-			resp, status := serv.checkLDAP(base64.StdEncoding.EncodeToString([]byte(test.token)))
-			if test.expectedStatus == http.StatusOK {
-				if status != http.StatusOK {
-					t.Errorf("Expected authentication true, got false. reason: %v", resp.Status.Error)
-				}
+			resp, err := serv.Check(base64.StdEncoding.EncodeToString([]byte(test.token)))
+			if test.authenticated {
+				assert.Nil(t, err)
 
-				u := resp.Status.User
-				if u.Username != test.username {
-					t.Errorf("Expected username %v, got %v", test.username, u.Username)
+				if resp.Username != test.username {
+					t.Errorf("Expected username %v, got %v", test.username, resp.Username)
 				}
-				if len(u.Groups) != len(test.groups) {
-					t.Errorf("Expected group size %v, got %v", len(test.groups), len(u.Groups))
+				if len(resp.Groups) != len(test.groups) {
+					t.Errorf("Expected group size %v, got %v", len(test.groups), len(resp.Groups))
 				} else {
-					if len(u.Groups) > 0 {
-						if !reflect.DeepEqual(u.Groups, test.groups) {
-							t.Errorf("Expected groups %v, got %v", test.groups, u.Groups)
+					if len(resp.Groups) > 0 {
+						if !reflect.DeepEqual(resp.Groups, test.groups) {
+							t.Errorf("Expected groups %v, got %v", test.groups, resp.Groups)
 						}
 					}
 				}
 			} else {
-				if status != test.expectedStatus {
-					t.Errorf("Expected status %v, got %v. reason: %v", test.expectedStatus, status, resp.Status.Error)
-				}
-				if resp.Status.Error == "" {
-					t.Errorf("Expected non empty error message")
-				}
+				assert.NotNil(t, err)
+				assert.Nil(t, resp)
 			}
 		})
 	}

@@ -1,8 +1,7 @@
-package lib
+package appscode
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -12,8 +11,16 @@ import (
 	"appscode.com/api/dtypes"
 	"appscode.com/client-go"
 	_env "github.com/appscode/go/env"
+	"github.com/json-iterator/go"
+	"github.com/pkg/errors"
 	auth "k8s.io/api/authentication/v1"
 )
+
+const (
+	OrgType = "appscode"
+)
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type WhoAmIResponse struct {
 	ErrorCode interface{}      `json:"error_code"`
@@ -39,10 +46,10 @@ type ConduitClient struct {
 	Token string
 }
 
-func checkAppscode(name, token string) (auth.TokenReview, int) {
+func Check(name, token string) (*auth.UserInfo, error) {
 	ctx := context.Background()
 	options := client.NewOption(_env.ProdApiServer)
-	options.UserAgent("c/guard")
+	options.UserAgent("appscode/guard")
 	/*namespace := strings.Split(name, ".")
 	if len(namespace) != 3 {
 		return Error(fmt.Sprintf("Failed to detect namespace from domain: %v", name)), http.StatusUnauthorized
@@ -50,12 +57,12 @@ func checkAppscode(name, token string) (auth.TokenReview, int) {
 	options = options.BearerAuth(name, token)
 	c, err := client.New(options)
 	if err != nil {
-		return Error(fmt.Sprintf("Failed to create oauth2/v1 api c for domain %s. Reason: %v.", name, err)), http.StatusUnauthorized
+		return nil, errors.Wrapf(err, "failed to create oauth2/v1 api for domain %s", name)
 	}
 
 	user, err := c.Authentication().Conduit().WhoAmI(ctx, &dtypes.VoidRequest{})
 	if err != nil {
-		return Error(fmt.Sprintf("Failed to load user info for domain %s.c.com. Reason: %v.", name, err)), http.StatusUnauthorized
+		return nil, errors.Wrapf(err, "failed to load user info for domain %s", name)
 	}
 
 	projects, err := c.Authentication().Project().List(ctx, &api.ProjectListRequest{
@@ -63,23 +70,19 @@ func checkAppscode(name, token string) (auth.TokenReview, int) {
 		Members:    []string{user.User.Phid},
 	})
 	if err != nil {
-		return Error(fmt.Sprintf("Failed to load user's teams for Org %s. Reason: %v.", name, err)), http.StatusUnauthorized
-	}
-	data := auth.TokenReview{}
-	data.Status = auth.TokenReviewStatus{
-		User: auth.UserInfo{
-			Username: user.User.UserName,
-			UID:      user.User.Phid,
-		},
+		return nil, errors.Wrapf(err, "failed to load user's teams for Org %s", name)
 	}
 
+	resp := &auth.UserInfo{
+		Username: user.User.UserName,
+		UID:      user.User.Phid,
+	}
 	var groups []string
 	for _, project := range projects.Projects {
 		groups = append(groups, project.Name)
 	}
-	data.Status.User.Groups = groups
-	data.Status.Authenticated = true
-	return data, http.StatusOK
+	resp.Groups = groups
+	return resp, nil
 }
 
 func (p *ConduitClient) Call() *ConduitClient {

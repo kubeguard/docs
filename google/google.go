@@ -1,14 +1,11 @@
-package lib
+package google
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
-	"net/http"
 
 	"github.com/coreos/go-oidc"
 	"github.com/pkg/errors"
-	"github.com/spf13/pflag"
 	"golang.org/x/oauth2/google"
 	gdir "google.golang.org/api/admin/directory/v1"
 	gauth "google.golang.org/api/oauth2/v1"
@@ -16,20 +13,16 @@ import (
 )
 
 const (
-	googleIssuerUrl = "https://accounts.google.com"
+	OrgType = "google"
 
+	googleIssuerUrl = "https://accounts.google.com"
 	// https://developers.google.com/identity/protocols/OAuth2InstalledApp
 	GoogleOauth2ClientID     = "37154062056-220683ek37naab43v23vc5qg01k1j14g.apps.googleusercontent.com"
 	GoogleOauth2ClientSecret = "pB9ITCuMPLj-bkObrTqKbt57"
 )
 
-type GoogleOptions struct {
-	ServiceAccountJsonFile string
-	AdminEmail             string
-}
-
-type GoogleClient struct {
-	GoogleOptions
+type Authenticator struct {
+	Options
 	verifier *oidc.IDTokenVerifier
 	ctx      context.Context
 	service  *gdir.Service
@@ -40,28 +33,10 @@ type TokenInfo struct {
 	HD string `json:"hd"`
 }
 
-func (s *GoogleOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&s.ServiceAccountJsonFile, "google.sa-json-file", s.ServiceAccountJsonFile, "Path to Google service account json file")
-	fs.StringVar(&s.AdminEmail, "google.admin-email", s.AdminEmail, "Email of G Suite administrator")
-}
-
-func (s GoogleOptions) ToArgs() []string {
-	var args []string
-
-	if s.ServiceAccountJsonFile != "" {
-		args = append(args, fmt.Sprintf("--google.sa-json-file=/etc/guard/auth/sa.json"))
-	}
-	if s.AdminEmail != "" {
-		args = append(args, fmt.Sprintf("--google.admin-email=%s", s.AdminEmail))
-	}
-
-	return args
-}
-
-func NewGoogleClient(opts GoogleOptions, domain string) (*GoogleClient, error) {
-	g := &GoogleClient{
-		GoogleOptions: opts,
-		ctx:           context.Background(),
+func New(opts Options, domain string) (*Authenticator, error) {
+	g := &Authenticator{
+		Options: opts,
+		ctx:     context.Background(),
 	}
 
 	provider, err := oidc.NewProvider(g.ctx, googleIssuerUrl)
@@ -99,29 +74,26 @@ func NewGoogleClient(opts GoogleOptions, domain string) (*GoogleClient, error) {
 }
 
 // https://developers.google.com/identity/protocols/OpenIDConnect#validatinganidtoken
-func (g *GoogleClient) checkGoogle(name, token string) (auth.TokenReview, int) {
+func (g *Authenticator) Check(name, token string) (*auth.UserInfo, error) {
 	idToken, err := g.verifier.Verify(g.ctx, token)
 	if err != nil {
-		return Error(fmt.Sprintf("Failed to verify token for google. Reason: %v.", err)), http.StatusUnauthorized
+		return nil, errors.Wrap(err, "failed to verify token for google")
 	}
 
 	info := TokenInfo{}
 
 	err = idToken.Claims(&info)
 	if err != nil {
-		return Error(fmt.Sprintf("Failed to get claim from token. Reason: %v", err)), http.StatusUnauthorized
+		return nil, errors.Wrap(err, "failed to get claim from token")
 	}
 
 	if info.HD != name {
-		return Error(fmt.Sprintf("User is not a member of domain %s.", name)), http.StatusUnauthorized
+		return nil, errors.Errorf("user is not a member of domain %s", name)
 	}
 
-	resp := auth.TokenReview{}
-	resp.Status = auth.TokenReviewStatus{
-		User: auth.UserInfo{
-			Username: info.Email,
-			UID:      info.UserId,
-		},
+	resp := &auth.UserInfo{
+		Username: info.Email,
+		UID:      info.UserId,
 	}
 
 	if g.ServiceAccountJsonFile != "" {
@@ -131,7 +103,7 @@ func (g *GoogleClient) checkGoogle(name, token string) (auth.TokenReview, int) {
 		for {
 			r2, err := g.service.Groups.List().UserKey(info.Email).Domain(name).PageToken(pageToken).Do()
 			if err != nil {
-				return Error(fmt.Sprintf("Failed to load user's groups for domain %s. Reason: %v.", name, err)), http.StatusUnauthorized
+				return nil, errors.Wrapf(err, "failed to load user's groups for domain %s", name)
 			}
 			for _, group := range r2.Groups {
 				groups = append(groups, group.Email)
@@ -141,9 +113,8 @@ func (g *GoogleClient) checkGoogle(name, token string) (auth.TokenReview, int) {
 			}
 			pageToken = r2.NextPageToken
 		}
-		resp.Status.User.Groups = groups
+		resp.Groups = groups
 	}
 
-	resp.Status.Authenticated = true
-	return resp, http.StatusOK
+	return resp, nil
 }

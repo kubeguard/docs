@@ -1,36 +1,36 @@
-package lib
+package gitlab
 
 import (
-	"fmt"
-	"net/http"
 	"strconv"
 
+	"github.com/pkg/errors"
 	"github.com/xanzy/go-gitlab"
 	auth "k8s.io/api/authentication/v1"
 )
 
-type GitlabClient struct {
+const (
+	OrgType = "gitlab"
+)
+
+type Authenticator struct {
 	Client *gitlab.Client
 }
 
-func NewGitlabClient(token string) *GitlabClient {
-	return &GitlabClient{
+func New(token string) *Authenticator {
+	return &Authenticator{
 		Client: gitlab.NewClient(nil, token),
 	}
 }
 
-func (g *GitlabClient) checkGitLab() (auth.TokenReview, int) {
+func (g *Authenticator) Check() (*auth.UserInfo, error) {
 	user, _, err := g.Client.Users.CurrentUser()
 	if err != nil {
-		return Error(err.Error()), http.StatusUnauthorized
+		return nil, errors.WithStack(err)
 	}
 
-	resp := auth.TokenReview{}
-	resp.Status = auth.TokenReviewStatus{
-		User: auth.UserInfo{
-			Username: user.Username,
-			UID:      strconv.Itoa(user.ID),
-		},
+	resp := &auth.UserInfo{
+		Username: user.Username,
+		UID:      strconv.Itoa(user.ID),
 	}
 
 	var groups []string
@@ -42,7 +42,7 @@ func (g *GitlabClient) checkGitLab() (auth.TokenReview, int) {
 			ListOptions: gitlab.ListOptions{Page: page, PerPage: pageSize},
 		})
 		if err != nil {
-			return Error(fmt.Sprintf("Failed to load groups. Reason: %v", err)), http.StatusBadRequest
+			return nil, errors.Wrap(err, "failed to load groups")
 		}
 		for _, g := range list {
 			groups = append(groups, g.Name)
@@ -53,7 +53,6 @@ func (g *GitlabClient) checkGitLab() (auth.TokenReview, int) {
 		page++
 	}
 
-	resp.Status.User.Groups = groups
-	resp.Status.Authenticated = true
-	return resp, http.StatusOK
+	resp.Groups = groups
+	return resp, nil
 }

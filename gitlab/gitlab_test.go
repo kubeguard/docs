@@ -1,4 +1,4 @@
-package lib
+package gitlab
 
 import (
 	"fmt"
@@ -6,14 +6,18 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/appscode/pat"
+	"github.com/json-iterator/go"
 	"github.com/pkg/errors"
+	"github.com/stretchr/testify/assert"
 	"github.com/xanzy/go-gitlab"
 	"k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 const (
 	gitlabUsername     = "nahid"
@@ -60,48 +64,28 @@ func gitlabVerifyPageParameter(values []string) (int, error) {
 	}
 }
 
-func gitlabVerifyGroup(groupList []string, expectedSize int) error {
+func assertGroup(t *testing.T, groupList []string, expectedSize int) {
 	if len(groupList) != expectedSize {
-		return fmt.Errorf("expected group size: %v, got %v", expectedSize, len(groupList))
+		t.Errorf("expected group size: %v, got %v", expectedSize, len(groupList))
 	}
-	mapGroupName := map[string]bool{}
-	for _, name := range groupList {
-		mapGroupName[name] = true
-	}
+
+	groups := sets.NewString(groupList...)
 	for i := 1; i <= expectedSize; i++ {
 		group := "team" + strconv.Itoa(i)
-		if _, ok := mapGroupName[group]; !ok {
-			return fmt.Errorf("group %v is missing", group)
+		if !groups.Has(group) {
+			t.Errorf("group %v is missing", group)
 		}
 	}
-	return nil
 }
 
-func gitlabVerifyAuthenticatedReview(review *v1.TokenReview, groupSize int) error {
-	if !review.Status.Authenticated {
-		return fmt.Errorf("expected authenticated ture, got false")
+func assertUserInfo(t *testing.T, info *v1.UserInfo, groupSize int) {
+	if info.Username != gitlabUsername {
+		t.Errorf("expected username %v, got %v", "nahid", info.Username)
 	}
-	if review.Status.User.Username != gitlabUsername {
-		return fmt.Errorf("expected username %v, got %v", "nahid", review.Status.User.Username)
+	if info.UID != gitlabUID {
+		t.Errorf("expected user id %v, got %v", "1204", info.UID)
 	}
-	if review.Status.User.UID != gitlabUID {
-		return fmt.Errorf("expected user id %v, got %v", "1204", review.Status.User.UID)
-	}
-	err := gitlabVerifyGroup(review.Status.User.Groups, groupSize)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func gitlabVerifyUnauthenticatedReview(review *v1.TokenReview, expectedErr string) error {
-	if review.Status.Authenticated {
-		return fmt.Errorf("expected authenticated false, got true")
-	}
-	if !strings.Contains(review.Status.Error, expectedErr) {
-		return fmt.Errorf("expected error `%v`, got `%v`", expectedErr, review.Status.Error)
-	}
-	return nil
+	assertGroup(t, info.Groups, groupSize)
 }
 
 // return string format
@@ -202,8 +186,8 @@ func gitlabServerSetup(userResp string, userStatusCode int, gengroupResp gitlabG
 	return srv
 }
 
-func gitlabClientSetup(serverUrl, token string) (*GitlabClient, error) {
-	g := &GitlabClient{
+func gitlabClientSetup(serverUrl, token string) (*Authenticator, error) {
+	g := &Authenticator{
 		Client: gitlab.NewClient(nil, token),
 	}
 	err := g.Client.SetBaseURL(serverUrl)
@@ -255,14 +239,9 @@ func TestGitlab(t *testing.T) {
 			if err != nil {
 				t.Errorf("Error when creating gitlab client. Reason %v", err)
 			} else {
-				resp, status := client.checkGitLab()
-				if status != http.StatusUnauthorized {
-					t.Errorf("Expected status code %v, got %v. Reason %v", http.StatusUnauthorized, status, resp.Status.Error)
-				}
-				err := gitlabVerifyUnauthenticatedReview(&resp, test.expectedErr)
-				if err != nil {
-					t.Error(err)
-				}
+				resp, err := client.Check()
+				assert.NotNil(t, err)
+				assert.Nil(t, resp)
 			}
 		})
 	}
@@ -281,14 +260,9 @@ func TestForDIfferentGroupSizes(t *testing.T) {
 			if err != nil {
 				t.Errorf("Error when creating gitlab client. Reason %v", err)
 			} else {
-				resp, status := client.checkGitLab()
-				if status != http.StatusOK {
-					t.Errorf("Expected status code 200, got %v. Reason %v", status, resp.Status.Error)
-				}
-				err := gitlabVerifyAuthenticatedReview(&resp, groupSize)
-				if err != nil {
-					t.Error(err)
-				}
+				resp, err := client.Check()
+				assert.Nil(t, err)
+				assertUserInfo(t, resp, groupSize)
 			}
 		})
 	}
@@ -321,14 +295,9 @@ func TestGroupListErrorInDifferentPage(t *testing.T) {
 			if err != nil {
 				t.Errorf("Error when creating gitlab client. Reason %v", err)
 			} else {
-				resp, status := client.checkGitLab()
-				if status != http.StatusBadRequest {
-					t.Errorf("Expected status code %v, got %v. Reason %v", http.StatusBadRequest, status, resp.Status.Error)
-				}
-				err := gitlabVerifyUnauthenticatedReview(&resp, "{{{"+errMsg+"}}}")
-				if err != nil {
-					t.Error(err)
-				}
+				resp, err := client.Check()
+				assert.NotNil(t, err)
+				assert.Nil(t, resp)
 			}
 		})
 	}

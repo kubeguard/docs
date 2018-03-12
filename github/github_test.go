@@ -1,4 +1,4 @@
-package lib
+package github
 
 import (
 	"context"
@@ -8,14 +8,18 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/appscode/pat"
 	"github.com/google/go-github/github"
+	"github.com/json-iterator/go"
+	"github.com/stretchr/testify/assert"
 	"golang.org/x/oauth2"
 	"k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 const (
 	githubOrganization = "appscode"
@@ -156,48 +160,28 @@ func verifyPageParameter(values []string) (int, error) {
 	}
 }
 
-func verifyTeamList(teamList []string, expectedSize int) error {
+func assertTeamList(t *testing.T, teamList []string, expectedSize int) {
 	if len(teamList) != expectedSize {
-		return fmt.Errorf("Expected team size: %v, got %v", expectedSize, len(teamList))
+		t.Errorf("Expected team size: %v, got %v", expectedSize, len(teamList))
 	}
-	mapTeamName := map[string]bool{}
-	for _, name := range teamList {
-		mapTeamName[name] = true
-	}
+
+	teams := sets.NewString(teamList...)
 	for i := 1; i <= expectedSize; i++ {
 		team := "team" + strconv.Itoa(i)
-		if _, ok := mapTeamName[team]; !ok {
-			return fmt.Errorf("Team %v is missing", team)
+		if !teams.Has(team) {
+			t.Errorf("Team %v is missing", team)
 		}
 	}
-	return nil
 }
 
-func verifyAuthenticatedTokenReview(review *v1.TokenReview, teamSize int) error {
-	if !review.Status.Authenticated {
-		return fmt.Errorf("Expected authenticated ture, got false")
+func assertUserInfo(t *testing.T, info *v1.UserInfo, teamSize int) {
+	if info.Username != githubUsername {
+		t.Errorf("Expected username %v, got %v", "nahid", info.Username)
 	}
-	if review.Status.User.Username != githubUsername {
-		return fmt.Errorf("Expected username %v, got %v", "nahid", review.Status.User.Username)
+	if info.UID != githubUID {
+		t.Errorf("Expected user id %v, got %v", "1204", info.UID)
 	}
-	if review.Status.User.UID != githubUID {
-		return fmt.Errorf("Expected user id %v, got %v", "1204", review.Status.User.UID)
-	}
-	err := verifyTeamList(review.Status.User.Groups, teamSize)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func verifyUnauthenticatedTokenReview(review *v1.TokenReview, expectedErr string) error {
-	if review.Status.Authenticated {
-		return fmt.Errorf("Expected authenticated false, got true")
-	}
-	if !strings.Contains(review.Status.Error, expectedErr) {
-		return fmt.Errorf("Expected error `%v`, got `%v`", expectedErr, review.Status.Error)
-	}
-	return nil
+	assertTeamList(t, info.Groups, teamSize)
 }
 
 func githubServerSetup(githubOrg string, memberResp string, memberStatusCode int, genTeamRespn teamRespFunc) *httptest.Server {
@@ -241,9 +225,9 @@ func githubServerSetup(githubOrg string, memberResp string, memberStatusCode int
 	return srv
 }
 
-func githubClientSetup(serverUrl, githubOrg string, ctx context.Context, httpClient *http.Client) (*GithubClient, error) {
-	g := &GithubClient{
-		Ctx:     ctx,
+func githubClientSetup(serverUrl, githubOrg string, ctx context.Context, httpClient *http.Client) (*Authenticator, error) {
+	g := &Authenticator{
+		ctx:     ctx,
 		OrgName: githubOrg,
 	}
 	var err error
@@ -309,15 +293,9 @@ func TestCheckGithub(t *testing.T) {
 			if err != nil {
 				t.Errorf("Error when creating github client. Reason %v", err)
 			} else {
-				resp, status := client.checkGithub()
-				if status != http.StatusUnauthorized {
-					t.Errorf("Expected status code %v, got %v. Reason %v", http.StatusUnauthorized, status, resp.Status.Error)
-				}
-
-				err := verifyUnauthenticatedTokenReview(&resp, test.expectedErr)
-				if err != nil {
-					t.Error(err)
-				}
+				resp, err := client.Check()
+				assert.NotNil(t, err)
+				assert.Nil(t, resp)
 			}
 		})
 	}
@@ -340,14 +318,9 @@ func TestForDifferentTeamSizes(t *testing.T) {
 			if err != nil {
 				t.Errorf("Error when creating github client. Reason %v", err)
 			} else {
-				resp, status := client.checkGithub()
-				if status != http.StatusOK {
-					t.Errorf("Expected status code 200, got %v. Reason %v", status, resp.Status.Error)
-				}
-				err := verifyAuthenticatedTokenReview(&resp, teamSize)
-				if err != nil {
-					t.Error(err)
-				}
+				resp, err := client.Check()
+				assert.Nil(t, err)
+				assertUserInfo(t, resp, teamSize)
 			}
 		})
 	}
@@ -362,14 +335,9 @@ func TestAuthorizationHeader(t *testing.T) {
 	if err != nil {
 		t.Errorf("Error when creating github client. Reason %v", err)
 	} else {
-		resp, status := client.checkGithub()
-		if status != http.StatusUnauthorized {
-			t.Errorf("Expected status code %v, got %v. Reason %v", http.StatusUnauthorized, status, resp.Status.Error)
-		}
-		err := verifyUnauthenticatedTokenReview(&resp, "{{{Header Authorization: expected not empty}}}")
-		if err != nil {
-			t.Error(err)
-		}
+		resp, err := client.Check()
+		assert.NotNil(t, err)
+		assert.Nil(t, resp)
 	}
 }
 
@@ -405,14 +373,9 @@ func TestTeamListErrorAtDifferentPage(t *testing.T) {
 			if err != nil {
 				t.Errorf("Error when creating github client. Reason %v", err)
 			} else {
-				resp, status := client.checkGithub()
-				if status != http.StatusUnauthorized {
-					t.Errorf("Expected status code %v, got %v. Reason %v", http.StatusUnauthorized, status, resp.Status.Error)
-				}
-				err := verifyUnauthenticatedTokenReview(&resp, "{{{"+errMsg+"}}}")
-				if err != nil {
-					t.Error(err)
-				}
+				resp, err := client.Check()
+				assert.NotNil(t, err)
+				assert.Nil(t, resp)
 			}
 		})
 	}

@@ -1,12 +1,12 @@
-package lib
+package token
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
+	"github.com/stretchr/testify/assert"
 	auth "k8s.io/api/authentication/v1"
 )
 
@@ -14,15 +14,15 @@ func stringArrayToBytes(in []string) []byte {
 	return []byte(strings.Join(in, "\n"))
 }
 
-func verifyUserInfo(got, want auth.UserInfo) error {
+func assertUserInfo(t *testing.T, got, want auth.UserInfo) {
 	if got.Username != want.Username {
-		return fmt.Errorf("Expected username %v, got %v", want.Username, got.Username)
+		t.Errorf("Expected username %v, got %v", want.Username, got.Username)
 	}
 	if got.UID != want.UID {
-		return fmt.Errorf("Expected uid %v, got %v", want.UID, got.UID)
+		t.Errorf("Expected uid %v, got %v", want.UID, got.UID)
 	}
 	if len(got.Groups) != len(want.Groups) {
-		return fmt.Errorf("Expected groups size %v, got %v", len(want.Groups), len(got.Groups))
+		t.Errorf("Expected groups size %v, got %v", len(want.Groups), len(got.Groups))
 	}
 	groupMap := map[string]bool{}
 	for _, g := range got.Groups {
@@ -30,40 +30,22 @@ func verifyUserInfo(got, want auth.UserInfo) error {
 	}
 	for _, g := range want.Groups {
 		if !groupMap[g] {
-			return fmt.Errorf("Group %v not found", g)
+			t.Errorf("Group %v not found", g)
 		}
 	}
-	return nil
 }
 
-func verifyLoadTokenResp(got, want map[string]auth.UserInfo) error {
+func assertLoadTokenResp(t *testing.T, got, want map[string]auth.UserInfo) {
 	if len(got) != len(want) {
-		return fmt.Errorf("expected item size %v, got %v", len(want), len(got))
+		t.Errorf("expected item size %v, got %v", len(want), len(got))
 	}
 	for token, user := range got {
 		if wantedUser, found := want[token]; found {
-			if err := verifyUserInfo(user, wantedUser); err != nil {
-				return fmt.Errorf("Expected user %v, got %v, error : %v", wantedUser, user, err)
-			}
+			assertUserInfo(t, user, wantedUser)
 		} else {
-			return fmt.Errorf("user not found for token %v", token)
+			t.Errorf("user not found for token %v", token)
 		}
 	}
-	return nil
-}
-
-func checkError(got, want error) error {
-
-	if want == nil || got == nil {
-		if want != got {
-			return fmt.Errorf("Error: expected %v, got %v", want, got)
-		}
-	} else {
-		if want.Error() != got.Error() {
-			return fmt.Errorf("Error: expected %v, got %v", want, got)
-		}
-	}
-	return nil
 }
 
 func TestLoadTokenFile(t *testing.T) {
@@ -102,11 +84,16 @@ func TestLoadTokenFile(t *testing.T) {
 			[]string{
 				`token1,user1,1," group1 , group2 "`,
 				`token2, user2, 2,group1`,
-				`token4, user3, 3`,
-				`token3, user4, 4,`,
+				`token3, user3, 3`,
+				`token4, user4, 4,`,
+			},
+			map[string]auth.UserInfo{
+				"token1": {Username: "user1", UID: "1", Groups: []string{"group1", "group2"}},
+				"token2": {Username: "user2", UID: "2", Groups: []string{"group1"}},
+				"token3": {Username: "user3", UID: "3"},
+				"token4": {Username: "user4", UID: "4"},
 			},
 			nil,
-			fmt.Errorf("failed to parse token auth file: line 3, column 0: wrong number of fields in line"),
 		},
 		{
 			[]string{
@@ -204,12 +191,13 @@ func TestLoadTokenFile(t *testing.T) {
 			} else {
 				t.Log("test data:", testData)
 				resp, err := LoadTokenFile(file)
-				if err := checkError(err, testData.expectedError); err != nil {
-					t.Log(string(tokenData))
-					t.Error(err)
-				} else if err := verifyLoadTokenResp(resp, testData.expectedResp); err != nil {
-					t.Log(string(tokenData))
-					t.Errorf("UserInfo: %v", err)
+				if testData.expectedError != nil {
+					assert.NotNil(t, err)
+					assert.EqualError(t, err, testData.expectedError.Error())
+					assert.Nil(t, resp)
+				} else {
+					assert.Nil(t, err)
+					assertLoadTokenResp(t, resp, testData.expectedResp)
 				}
 			}
 		})
@@ -217,7 +205,7 @@ func TestLoadTokenFile(t *testing.T) {
 }
 
 func TestCheckTokenAuth(t *testing.T) {
-	tokenMap = map[string]auth.UserInfo{
+	tokenMap := map[string]auth.UserInfo{
 		"token1": {Username: "user1", UID: "1", Groups: []string{"group1", "group2"}},
 		"token2": {Username: "user2", UID: "2", Groups: []string{"group1"}},
 		"token3": {Username: "user3", UID: "3", Groups: []string{}},
@@ -225,19 +213,19 @@ func TestCheckTokenAuth(t *testing.T) {
 	}
 
 	dataset := []struct {
-		testName       string
-		token          string
-		expectedUser   auth.UserInfo
-		expectedError  string
-		expectedStatus int
-		expectedAuth   bool
+		testName      string
+		token         string
+		expectedUser  auth.UserInfo
+		expectedError string
+		authenticated bool
+		expectedAuth  bool
 	}{
 		{
 			"authentication successful, multiple groups",
 			"token1",
 			auth.UserInfo{Username: "user1", UID: "1", Groups: []string{"group1", "group2"}},
 			"",
-			http.StatusOK,
+			true,
 			true,
 		},
 		{
@@ -245,7 +233,7 @@ func TestCheckTokenAuth(t *testing.T) {
 			"token2",
 			auth.UserInfo{Username: "user2", UID: "2", Groups: []string{"group1"}},
 			"",
-			http.StatusOK,
+			true,
 			true,
 		},
 		{
@@ -253,7 +241,7 @@ func TestCheckTokenAuth(t *testing.T) {
 			"token3",
 			auth.UserInfo{Username: "user3", UID: "3", Groups: []string{}},
 			"",
-			http.StatusOK,
+			true,
 			true,
 		},
 		{
@@ -261,7 +249,7 @@ func TestCheckTokenAuth(t *testing.T) {
 			"token4",
 			auth.UserInfo{Username: "user2", UID: "2", Groups: []string{"group2", "group3"}},
 			"",
-			http.StatusOK,
+			true,
 			true,
 		},
 		{
@@ -269,7 +257,7 @@ func TestCheckTokenAuth(t *testing.T) {
 			"badtoken",
 			auth.UserInfo{},
 			"Invalid token",
-			http.StatusUnauthorized,
+			false,
 			false,
 		},
 		{
@@ -277,37 +265,31 @@ func TestCheckTokenAuth(t *testing.T) {
 			"",
 			auth.UserInfo{},
 			"Invalid token",
-			http.StatusUnauthorized,
+			false,
 			false,
 		},
 	}
 
-	srv := Server{}
+	srv := Authenticator{
+		tokenMap: tokenMap,
+	}
 
 	for _, testData := range dataset {
 		t.Run(testData.testName, func(t *testing.T) {
-			resp, status := srv.checkTokenAuth(testData.token)
+			resp, err := srv.Check(testData.token)
 
-			t.Log(tokenMap)
+			t.Log(srv.tokenMap)
 			t.Log("token :", testData.token)
 
-			if status != testData.expectedStatus {
-				t.Errorf("Expected status code %v, got %v", testData.expectedStatus, status)
-			}
-
-			if resp.Status.Authenticated != testData.expectedAuth {
-				t.Errorf("Expected Authentication %v, got %v", testData.expectedAuth, resp.Status.Authenticated)
-			}
-
-			if resp.Status.Authenticated {
-				if err := verifyUserInfo(resp.Status.User, testData.expectedUser); err != nil {
-					t.Error(err)
-					t.Errorf("Expected user %v, got %v", testData.expectedUser, resp.Status.User)
+			if testData.authenticated {
+				assert.Nil(t, err)
+				if assert.NotNil(t, resp) {
+					assertUserInfo(t, *resp, testData.expectedUser)
 				}
 			} else {
-				if resp.Status.Error != testData.expectedError {
-					t.Errorf("Expected error message %v, got %v", testData.expectedError, resp.Status.Error)
-				}
+				assert.NotNil(t, err)
+				assert.EqualError(t, err, testData.expectedError)
+				assert.Nil(t, resp)
 			}
 		})
 	}

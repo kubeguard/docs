@@ -1,7 +1,10 @@
-package lib
+package google
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net"
@@ -13,9 +16,12 @@ import (
 	"testing"
 
 	"github.com/appscode/pat"
-	oidc "github.com/coreos/go-oidc"
+	"github.com/coreos/go-oidc"
+	"github.com/stretchr/testify/assert"
 	gdir "google.golang.org/api/admin/directory/v1"
+	"gopkg.in/square/go-jose.v2"
 	auth "k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 const (
@@ -23,7 +29,57 @@ const (
 	adminEmail  = "admin@domain.com"
 	domain      = "domain"
 	googleToken = `{ "iss" : "%s", "email" : "%s", "aud" : "%s", "hd" : "%s"}`
+	badToken    = "bad_token"
 )
+
+type signingKey struct {
+	keyID string // optional
+	priv  interface{}
+	pub   interface{}
+	alg   jose.SignatureAlgorithm
+}
+
+func (s *signingKey) sign(payload []byte) (string, error) {
+	privKey := &jose.JSONWebKey{Key: s.priv, Algorithm: string(s.alg), KeyID: ""}
+
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: s.alg, Key: privKey}, nil)
+	if err != nil {
+		return "", err
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		return "", err
+	}
+
+	data, err := jws.CompactSerialize()
+	if err != nil {
+		return "", err
+	}
+	return data, nil
+}
+
+// jwk returns the public part of the signing key.
+func (s *signingKey) jwk() jose.JSONWebKeySet {
+	k := jose.JSONWebKey{Key: s.pub, Use: "sig", Algorithm: string(s.alg), KeyID: s.keyID}
+	kset := jose.JSONWebKeySet{}
+	kset.Keys = append(kset.Keys, k)
+	return kset
+}
+
+func newRSAKey(t *testing.T) (*signingKey, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 1028)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &signingKey{"", priv, priv.Public(), jose.RS256}, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 type googleGroupResp func(u *url.URL) (int, []byte)
 
@@ -107,10 +163,10 @@ func googleVerifyUrlParams(u *url.URL) error {
 	return nil
 }
 
-func googleClientSetup(serverUrl string) (*GoogleClient, error) {
-	g := &GoogleClient{
+func googleClientSetup(serverUrl string) (*Authenticator, error) {
+	g := &Authenticator{
 		ctx: context.Background(),
-		GoogleOptions: GoogleOptions{
+		Options: Options{
 			AdminEmail:             adminEmail,
 			ServiceAccountJsonFile: "sa.json",
 		},
@@ -178,45 +234,25 @@ func googleServerSetup(jwkResp []byte, groupResp googleGroupResp) (*httptest.Ser
 	return srv, nil
 }
 
-func googleVerifyGroups(groups []string, expectedSize int) error {
-	if len(groups) != expectedSize {
-		return fmt.Errorf("expected group size: %v, got %v", expectedSize, len(groups))
+func assertGroups(t *testing.T, groupNames []string, expectedSize int) {
+	if len(groupNames) != expectedSize {
+		t.Errorf("expected group size: %v, got %v", expectedSize, len(groupNames))
 	}
-	mapGroupName := map[string]bool{}
-	for _, name := range groups {
-		mapGroupName[name] = true
-	}
+
+	groups := sets.NewString(groupNames...)
 	for i := 1; i <= expectedSize; i++ {
 		group := googleGetGroupEmail(i)
-		if _, ok := mapGroupName[group]; !ok {
-			return fmt.Errorf("group %v is missing", group)
+		if !groups.Has(group) {
+			t.Errorf("group %v is missing", group)
 		}
 	}
-	return nil
 }
 
-func googleVerifyAuthenticatedReview(review auth.TokenReview, groupSize int) error {
-	if !review.Status.Authenticated {
-		return fmt.Errorf("expected authenticated ture, got false")
+func assertUserInfo(t *testing.T, info *auth.UserInfo, groupSize int) {
+	if info.Username != userEmail {
+		t.Errorf("expected username %v, got %v", userEmail, info.Username)
 	}
-	if review.Status.User.Username != userEmail {
-		return fmt.Errorf("expected username %v, got %v", userEmail, review.Status.User.Username)
-	}
-	err := googleVerifyGroups(review.Status.User.Groups, groupSize)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func googleVerifyUnauthenticatedReview(review auth.TokenReview) error {
-	if review.Status.Authenticated {
-		return fmt.Errorf("expected authenticated false, got true")
-	}
-	if review.Status.Error == "" {
-		return fmt.Errorf("expected error non empty")
-	}
-	return nil
+	assertGroups(t, info.Groups, groupSize)
 }
 
 func TestCheckGoogleAuthenticationSuccess(t *testing.T) {
@@ -258,14 +294,9 @@ func TestCheckGoogleAuthenticationSuccess(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error when signing token. reason: %v", err)
 			}
-			resp, status := client.checkGoogle(domain, token)
-			if status != http.StatusOK {
-				t.Errorf("Expected %v, got %v. reason: %v", http.StatusOK, status, resp.Status.Error)
-			}
-			err = googleVerifyAuthenticatedReview(resp, test.groupSize)
-			if err != nil {
-				t.Error(err)
-			}
+			resp, err := client.Check(domain, token)
+			assert.Nil(t, err)
+			assertUserInfo(t, resp, test.groupSize)
 		})
 	}
 }
@@ -354,14 +385,10 @@ func TestCheckGoogleAuthenticationFailed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error when signing token. reason: %v", err)
 			}
-			resp, status := client.checkGoogle(domain, token)
-			if status != http.StatusUnauthorized {
-				t.Errorf("Expected %v, got %v", http.StatusUnauthorized, status)
-			}
-			err = googleVerifyUnauthenticatedReview(resp)
-			if err != nil {
-				t.Error(err)
-			}
+			resp, err := client.Check(domain, token)
+			//t.Log(test)
+			assert.NotNil(t, err)
+			assert.Nil(t, resp)
 		})
 	}
 }

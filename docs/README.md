@@ -31,11 +31,5 @@ From here you can learn all about Guard's architecture and how to deploy and use
 - [Reference](/docs/reference/). Detailed exhaustive lists of
 command-line Options, configuration Options, API definitions, and procedures.
 
-We're always looking for help on improving our documentation, so please don't hesitate to [file an issue](https://go.kubeguard.dev/guard/issues/new) if you see some problem. Or better yet, submit your own [contributions](/docs/CONTRIBUTING.md) to help
+We're always looking for help on improving our documentation, so please don't hesitate to [file an issue](https://github.com/kubeguard/guard/issues/new) if you see some problem. Or better yet, submit your own [contributions](/docs/CONTRIBUTING.md) to help
 make our docs better.
-
----
-
-**Guard binaries collects anonymous usage statistics to help us learn how the software is being used and how we can improve it. To disable stats collection, run the operator with the flag** `--analytics=false`.
-
----

@@ -24,16 +24,16 @@ If you want to set up guard via [__Kubespray__](https://github.com/kubernetes-in
 
 
 ## Install Guard as CLI
-Download pre-built binaries from [appscode/guard Github releases](https://go.kubeguard.dev/guard/releases) and put the binary to some directory in your `PATH`. To install on Linux 64-bit and MacOS 64-bit you can run the following commands:
+Download pre-built binaries from [appscode/guard Github releases](https://github.com/kubeguard/guard/releases) and put the binary to some directory in your `PATH`. To install on Linux 64-bit and MacOS 64-bit you can run the following commands:
 
 ```console
 # Linux amd 64-bit:
-wget -O guard https://go.kubeguard.dev/guard/releases/download/{{< param "info.version" >}}/guard-linux-amd64 \
+wget -O guard https://github.com/kubeguard/guard/releases/download/{{< param "info.version" >}}/guard-linux-amd64 \
   && chmod +x guard \
   && sudo mv guard /usr/local/bin/
 
 # Mac 64-bit
-wget -O guard https://go.kubeguard.dev/guard/releases/download/{{< param "info.version" >}}/guard-darwin-amd64 \
+wget -O guard https://github.com/kubeguard/guard/releases/download/{{< param "info.version" >}}/guard-darwin-amd64 \
   && chmod +x guard \
   && sudo mv guard /usr/local/bin/
 ```
@@ -101,7 +101,7 @@ total 32
 -rw------- 1 tamal tamal 1675 Aug 28 07:12 server.key
 ```
 
-As you can see, Guard stores the generated certificates in `.guard` subdirectory of home directory of user executing these commands. You can change the location by either setting `GUARD_DATA_DIR` environment variable or by passing the path to a different directory using [`--pki-dir`](https://go.kubeguard.dev/guard/pull/25) flag. For example:
+As you can see, Guard stores the generated certificates in `.guard` subdirectory of home directory of user executing these commands. You can change the location by either setting `GUARD_DATA_DIR` environment variable or by passing the path to a different directory using [`--pki-dir`](https://github.com/kubeguard/guard/pull/25) flag. For example:
 
 ```console
 $ export GUARD_DATA_DIR=/tmp/guard
